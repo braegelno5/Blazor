@@ -28,7 +28,14 @@ namespace Test
             var items = (IReadOnlyList<TItem>)Items ?? Array.Empty<TItem>();
             for (var i = 0; i < items.Count; i++)
             {
-                builder.AddContent(i, ChildContent, new Context() { Index = i, Item = items[i], });
+                if (ChildContent == null)
+                {
+                    builder.AddContent(i, Items[i]);
+                }
+                else
+                {
+                    builder.AddContent(i, ChildContent, new Context() { Index = i, Item = items[i], });
+                }
             }
         }
 
@@ -77,6 +84,33 @@ namespace Test
         internal override bool UseTwoPhaseCompilation => true;
 
         [Fact]
+        public void Render_GenericComponent_WithoutChildContent()
+        {
+            // Arrange
+            AdditionalSyntaxTrees.Add(GenericContextComponent);
+
+            var component = CompileToComponent(@"
+@addTagHelper *, TestAssembly
+<GenericContext TItem=int Items=""@(new List<int>() { 1, 2, })"" />");
+
+            // Act
+            var frames = GetRenderTree(component);
+
+            // Assert
+            var genericComponentType = component.GetType().Assembly.DefinedTypes
+                .Where(t => t.Name == "GenericContext`1")
+                .Single()
+                .MakeGenericType(typeof(int));
+
+            Assert.Collection(
+                frames,
+                frame => AssertFrame.Component(frame, genericComponentType.FullName, 2, 0),
+                frame => AssertFrame.Attribute(frame, "Items", typeof(List<int>), 1),
+                frame => AssertFrame.Text(frame, "1", 0),
+                frame => AssertFrame.Text(frame, "2", 1));
+        }
+
+        [Fact]
         public void Render_GenericComponent_WithChildContent()
         {
             // Arrange
@@ -110,6 +144,33 @@ namespace Test
                 frame => AssertFrame.Element(frame, "div", 2, 4),
                 frame => AssertFrame.Text(frame, "2", 5),
                 frame => AssertFrame.Whitespace(frame, 6));
+        }
+
+        [Fact]
+        public void Render_GenericComponent_TypeInference_WithoutChildContent()
+        {
+            // Arrange
+            AdditionalSyntaxTrees.Add(GenericContextComponent);
+
+            var component = CompileToComponent(@"
+@addTagHelper *, TestAssembly
+<GenericContext Items=""@(new List<int>() { 1, 2, })"" />");
+
+            // Act
+            var frames = GetRenderTree(component);
+
+            // Assert
+            var genericComponentType = component.GetType().Assembly.DefinedTypes
+                .Where(t => t.Name == "GenericContext`1")
+                .Single()
+                .MakeGenericType(typeof(int));
+
+            Assert.Collection(
+                frames,
+                frame => AssertFrame.Component(frame, genericComponentType.FullName, 2, 0),
+                frame => AssertFrame.Attribute(frame, "Items", typeof(List<int>), 1),
+                frame => AssertFrame.Text(frame, "1", 0),
+                frame => AssertFrame.Text(frame, "2", 1));
         }
 
         [Fact]
@@ -161,9 +222,10 @@ namespace Test
 
             // Assert
             var diagnostic = Assert.Single(generated.Diagnostics);
-            Assert.Same(BlazorDiagnosticFactory.GenericComponentMissingTypeArgument.Id, diagnostic.Id);
+            Assert.Same(BlazorDiagnosticFactory.GenericComponentTypeInferenceUnderspecified.Id, diagnostic.Id);
             Assert.Equal(
-                "The component 'GenericContext' is missing required type arguments. Specify the missing types using the attributes: 'TItem'.",
+                "The type of component 'GenericContext' cannot be inferred based on the values provided. Consider " +
+                "specifying the type arguments directly using the following attributes: 'TItem'.",
                 diagnostic.GetMessage());
         }
 

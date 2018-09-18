@@ -17,7 +17,7 @@ namespace Microsoft.AspNetCore.Blazor.Razor
     {
         private readonly ScopeStack _scopeStack = new ScopeStack();
 
-        private readonly static string DesignTimeVariable = "__o";
+        private static readonly string DesignTimeVariable = "__o";
 
         public override void WriteHtmlBlock(CodeRenderingContext context, HtmlBlockIntermediateNode node)
         {
@@ -343,40 +343,111 @@ namespace Microsoft.AspNetCore.Blazor.Razor
                 throw new ArgumentNullException(nameof(node));
             }
 
-            foreach (var typeArgument in node.TypeArguments)
+            if (node.TypeInferenceNode == null)
             {
-                context.RenderNode(typeArgument);
-            }
-
-            foreach (var attribute in node.Attributes)
-            {
-                context.RenderNode(attribute);
-            }
-
-            if (node.ChildContents.Any())
-            {
-                foreach (var childContent in node.ChildContents)
+                foreach (var typeArgument in node.TypeArguments)
                 {
-                    context.RenderNode(childContent);
+                    context.RenderNode(typeArgument);
+                }
+
+                foreach (var attribute in node.Attributes)
+                {
+                    context.RenderNode(attribute);
+                }
+
+                if (node.ChildContents.Any())
+                {
+                    foreach (var childContent in node.ChildContents)
+                    {
+                        context.RenderNode(childContent);
+                    }
+                }
+                else
+                {
+                    // We eliminate 'empty' child content when building the tree so that usage like
+                    // '<MyComponent>\r\n</MyComponent>' doesn't create a child content.
+                    //
+                    // Consider what would happen if the user's cursor was inside the element. At
+                    // design -time we want to render an empty lambda to provide proper scoping
+                    // for any code that the user types.
+                    context.RenderNode(new ComponentChildContentIntermediateNode()
+                    {
+                        TypeName = BlazorApi.RenderFragment.FullTypeName,
+                    });
+                }
+
+                foreach (var capture in node.Captures)
+                {
+                    context.RenderNode(capture);
                 }
             }
             else
             {
-                // We eliminate 'empty' child content when building the tree so that usage like
-                // '<MyComponent>\r\n</MyComponent>' doesn't create a child content.
-                //
-                // Consider what would happen if the user's cursor was inside the element. At
-                // design -time we want to render an empty lambda to provide proper scoping
-                // for any code that the user types.
-                context.RenderNode(new ComponentChildContentIntermediateNode()
-                {
-                    TypeName = BlazorApi.RenderFragment.FullTypeName,
-                });
-            }
+                var attributes = node.Attributes.ToList();
+                var childContents = node.ChildContents.ToList();
+                var captures = node.Captures.ToList();
+                var remaining = attributes.Count + childContents.Count + captures.Count;
 
-            foreach (var capture in node.Captures)
-            {
-                context.RenderNode(capture);
+                // Looks like:
+                // __Blazor.SomeNamespace.TypeInference.CreateGrid_0(builder, 1, "Foo");
+                context.CodeWriter.Write(node.TypeInferenceNode.FullTypeName);
+                context.CodeWriter.Write(".");
+                context.CodeWriter.Write(node.TypeInferenceNode.MethodName);
+                context.CodeWriter.Write("(");
+
+                context.CodeWriter.Write(_scopeStack.BuilderVarName);
+                context.CodeWriter.Write(", ");
+
+                context.CodeWriter.Write("-1");
+                context.CodeWriter.Write(", ");
+
+                for (var i = 0; i < attributes.Count; i++)
+                {
+                    context.CodeWriter.Write("-1");
+                    context.CodeWriter.Write(", ");
+
+                    // Don't type check generics, since we can't actually write the type name.
+                    // The type checking with happen anyway since we defined a method and we're generating
+                    // a call to it.
+                    WriteComponentAttributeInnards(context, attributes[i], canTypeCheck: false);
+
+                    remaining--;
+                    if (remaining > 0)
+                    {
+                        context.CodeWriter.Write(", ");
+                    }
+                }
+
+                for (var i = 0; i < childContents.Count; i++)
+                {
+                    context.CodeWriter.Write("-1");
+                    context.CodeWriter.Write(", ");
+
+                    WriteComponentChildContentInnards(context, childContents[i]);
+
+                    remaining--;
+                    if (remaining > 0)
+                    {
+                        context.CodeWriter.Write(", ");
+                    }
+                }
+
+                for (var i = 0; i < captures.Count; i++)
+                {
+                    context.CodeWriter.Write("-1");
+                    context.CodeWriter.Write(", ");
+
+                    WriteReferenceCaptureInnards(context, captures[i]);
+
+                    remaining--;
+                    if (remaining > 0)
+                    {
+                        context.CodeWriter.Write(", ");
+                    }
+                }
+
+                context.CodeWriter.Write(");");
+                context.CodeWriter.WriteLine();
             }
         }
 
@@ -392,6 +463,18 @@ namespace Microsoft.AspNetCore.Blazor.Razor
                 throw new ArgumentNullException(nameof(node));
             }
 
+            context.CodeWriter.Write(DesignTimeVariable);
+            context.CodeWriter.Write(" = ");
+
+            // Following the same design pattern as the runtime codegen
+            WriteComponentAttributeInnards(context, node, canTypeCheck: true);
+
+            context.CodeWriter.Write(";");
+            context.CodeWriter.WriteLine();
+        }
+
+        private void WriteComponentAttributeInnards(CodeRenderingContext context, ComponentAttributeExtensionNode node, bool canTypeCheck)
+        {
             // For design time we only care about the case where the attribute has c# code. 
             //
             // We also limit component attributes to simple cases. However there is still a lot of complexity
@@ -400,7 +483,8 @@ namespace Microsoft.AspNetCore.Blazor.Razor
             // This roughly follows the design of the runtime writer for simplicity.
             if (node.AttributeStructure == AttributeStructure.Minimized)
             {
-                // Do nothing
+                // Minimized attributes always map to 'true'
+                context.CodeWriter.Write("true");
             }
             else if (node.Children.Count > 1)
             {
@@ -409,7 +493,8 @@ namespace Microsoft.AspNetCore.Blazor.Razor
             }
             else if (node.Children.Count == 1 && node.Children[0] is HtmlContentIntermediateNode)
             {
-                // Do nothing
+                // We don't actually need the content at designtime, an empty string will do.
+                context.CodeWriter.Write("\"\"");
             }
             else
             {
@@ -430,29 +515,30 @@ namespace Microsoft.AspNetCore.Blazor.Razor
                 {
                     // We always surround the expression with the delegate constructor. This makes type
                     // inference inside lambdas, and method group conversion do the right thing.
-                    context.CodeWriter.Write(DesignTimeVariable);
-                    context.CodeWriter.Write(" = ");
-                    context.CodeWriter.Write("new ");
-                    context.CodeWriter.Write(node.TypeName);
-                    context.CodeWriter.Write("(");
+                    if (canTypeCheck)
+                    {
+                        context.CodeWriter.Write("new ");
+                        context.CodeWriter.Write(node.TypeName);
+                        context.CodeWriter.Write("(");
+                    }
                     context.CodeWriter.WriteLine();
 
                     for (var i = 0; i < tokens.Count; i++)
                     {
                         WriteCSharpToken(context, tokens[i]);
                     }
-
-                    context.CodeWriter.Write(");");
-                    context.CodeWriter.WriteLine();
+                    
+                    if (canTypeCheck)
+                    {
+                        context.CodeWriter.Write(")");
+                    }
                 }
                 else
                 {
                     // This is the case when an attribute contains C# code
-                    context.CodeWriter.Write(DesignTimeVariable);
-                    context.CodeWriter.Write(" = ");
-
+                    //
                     // If we have a parameter type, then add a type check.
-                    if (NeedsTypeCheck(node))
+                    if (canTypeCheck && NeedsTypeCheck(node))
                     {
                         context.CodeWriter.Write(BlazorApi.RuntimeHelpers.TypeCheck);
                         context.CodeWriter.Write("<");
@@ -466,13 +552,10 @@ namespace Microsoft.AspNetCore.Blazor.Razor
                         WriteCSharpToken(context, tokens[i]);
                     }
 
-                    if (NeedsTypeCheck(node))
+                    if (canTypeCheck && NeedsTypeCheck(node))
                     {
                         context.CodeWriter.Write(")");
                     }
-
-                    context.CodeWriter.Write(";");
-                    context.CodeWriter.WriteLine();
                 }
             }
 
@@ -500,10 +583,20 @@ namespace Microsoft.AspNetCore.Blazor.Razor
                 throw new ArgumentNullException(nameof(node));
             }
 
+            BeginWriteAttribute(context.CodeWriter, node.AttributeName);
+            context.CodeWriter.Write($"({node.TypeName})(");
+
+            WriteComponentChildContentInnards(context, node);
+
+            context.CodeWriter.Write(")");
+            context.CodeWriter.WriteEndMethodInvocation();
+        }
+
+        private void WriteComponentChildContentInnards(CodeRenderingContext context, ComponentChildContentIntermediateNode node)
+        {
             _scopeStack.OpenComponentScope(
                 context,
                 node.AttributeName,
-                node.TypeName,
                 node.IsParameterized ? node.ParameterName : null);
             for (var i = 0; i < node.Children.Count; i++)
             {
@@ -564,30 +657,35 @@ namespace Microsoft.AspNetCore.Blazor.Razor
             _scopeStack.CloseScope(context);
         }
 
-        public override void WriteReferenceCapture(CodeRenderingContext context, RefExtensionNode refNode)
+        public override void WriteReferenceCapture(CodeRenderingContext context, RefExtensionNode node)
         {
             if (context == null)
             {
                 throw new ArgumentNullException(nameof(context));
             }
 
-            if (refNode == null)
+            if (node == null)
             {
-                throw new ArgumentNullException(nameof(refNode));
+                throw new ArgumentNullException(nameof(node));
             }
 
+            WriteReferenceCaptureInnards(context, node);
+        }
+
+        private void WriteReferenceCaptureInnards(CodeRenderingContext context, RefExtensionNode node)
+        {
             // The runtime node writer moves the call elsewhere. At design time we
             // just want sufficiently similar code that any unknown-identifier or type
             // errors will be equivalent
-            var captureTypeName = refNode.IsComponentCapture
-                ? refNode.ComponentCaptureTypeName
+            var captureTypeName = node.IsComponentCapture
+                ? node.ComponentCaptureTypeName
                 : BlazorApi.ElementRef.FullTypeName;
             WriteCSharpCode(context, new CSharpCodeIntermediateNode
             {
-                Source = refNode.Source,
+                Source = node.Source,
                 Children =
                 {
-                    refNode.IdentifierToken,
+                    node.IdentifierToken,
                     new IntermediateToken
                     {
                         Kind = TokenKind.CSharp,

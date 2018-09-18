@@ -26,25 +26,36 @@ global::System.Object __typeHelper = "*, TestAssembly";
         protected override void BuildRenderTree(Microsoft.AspNetCore.Blazor.RenderTree.RenderTreeBuilder builder)
         {
             base.BuildRenderTree(builder);
-            __o = "";
-            __o = "";
-            builder.AddAttribute(-1, "ChildContent", (Microsoft.AspNetCore.Blazor.RenderFragment)((builder2) => {
-            }
-            ));
+            __Blazor.Test.TypeInference.CreateMyComponent_0(builder, -1, -1, 
 #line 2 "x:\dir\subdir\Test\TestComponent.cshtml"
-                                       myInstance = default(Test.MyComponent);
+                     "hi"
 
 #line default
 #line hidden
+            , -1, (context) => (builder2) => {
+#line 3 "x:\dir\subdir\Test\TestComponent.cshtml"
+  __o = context.ToLower();
+
+#line default
+#line hidden
+            }
+            );
         }
         #pragma warning restore 1998
-#line 4 "x:\dir\subdir\Test\TestComponent.cshtml"
-            
-    private Test.MyComponent myInstance;
-    public void Foo() { System.GC.KeepAlive(myInstance); }
-
-#line default
-#line hidden
+    }
+}
+namespace __Blazor.Test
+{
+    #line hidden
+    internal static class TypeInference
+    {
+        public static void CreateMyComponent_0<TItem>(global::Microsoft.AspNetCore.Blazor.RenderTree.RenderTreeBuilder builder, int seq, int __seq0, TItem __arg0, int __seq1, global::Microsoft.AspNetCore.Blazor.RenderFragment<TItem> __arg1)
+        {
+        builder.OpenComponent<global::Test.MyComponent<TItem>>(seq);
+        builder.AddAttribute(__seq0, "Item", __arg0);
+        builder.AddAttribute(__seq1, "ChildContent", __arg1);
+        builder.CloseComponent();
+        }
     }
 }
 #pragma warning restore 1591
